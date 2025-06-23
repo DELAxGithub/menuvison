@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:ui';
+import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -13,8 +13,9 @@ import '../services/ocr_service.dart';
 import '../services/image_search_service.dart';
 import '../config/env_config.dart';
 import '../widgets/camera_view.dart';
-import '../widgets/text_overlay.dart';
 import '../widgets/image_grid.dart';
+import '../widgets/crop_overlay.dart';
+import '../widgets/text_overlay.dart';
 import 'image_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -34,6 +35,9 @@ class _HomeScreenState extends State<HomeScreen> {
   List<TextDetectionResult> _textDetections = [];
   List<ImageSearchResult> _searchResults = [];
   String? _selectedText;
+  bool _isSelectingArea = false;
+  Rect? _selectedCropArea;
+  bool _showTextOverlay = true;
   Size? _imageSize;
   
   @override
@@ -69,14 +73,19 @@ class _HomeScreenState extends State<HomeScreen> {
       
       setState(() => _capturedImage = photo);
       
-      // Get actual image dimensions
+      // Get image dimensions
       final imageFile = File(photo.path);
-      final decodedImage = await decodeImageFromList(await imageFile.readAsBytes());
-      _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
+      final bytes = await imageFile.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final imageSize = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
+      frame.image.dispose();
+      codec.dispose();
       
-      final detections = await _ocrService.recognizeText(photo.path);
+      final detections = await _ocrService.recognizeTextInMenus(photo.path, cropArea: _selectedCropArea);
       setState(() {
         _textDetections = detections;
+        _imageSize = imageSize;
         _isLoading = false;
       });
     } catch (e) {
@@ -125,8 +134,44 @@ class _HomeScreenState extends State<HomeScreen> {
       _textDetections = [];
       _searchResults = [];
       _selectedText = null;
+      _isSelectingArea = false;
+      _selectedCropArea = null;
+      _showTextOverlay = true;
       _imageSize = null;
     });
+  }
+  
+  void _toggleAreaSelection() {
+    setState(() {
+      _isSelectingArea = !_isSelectingArea;
+      if (!_isSelectingArea) {
+        _selectedCropArea = null;
+      }
+    });
+  }
+  
+  void _onCropAreaChanged(Rect cropArea) {
+    setState(() {
+      _selectedCropArea = cropArea;
+    });
+  }
+  
+  Future<void> _reprocessWithCropArea() async {
+    if (_capturedImage == null) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      final detections = await _ocrService.recognizeTextInMenus(_capturedImage!.path, cropArea: _selectedCropArea);
+      setState(() {
+        _textDetections = detections;
+        _isLoading = false;
+        _isSelectingArea = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showError('Failed to reprocess image: $e');
+    }
   }
   
   void _viewImageDetail(ImageSearchResult image) {
@@ -151,10 +196,31 @@ class _HomeScreenState extends State<HomeScreen> {
       navigationBar: CupertinoNavigationBar(
         middle: const Text('MenuVision'),
         trailing: _capturedImage != null
-            ? CupertinoButton(
-                padding: EdgeInsets.zero,
-                child: const Text('Reset'),
-                onPressed: _reset,
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!_isSelectingArea && _textDetections.isNotEmpty)
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: Text(_showTextOverlay ? 'Hide Text' : 'Show Text'),
+                      onPressed: () {
+                        setState(() {
+                          _showTextOverlay = !_showTextOverlay;
+                        });
+                      },
+                    ),
+                  if (!_isSelectingArea && _textDetections.isNotEmpty)
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text('Select Area'),
+                      onPressed: _toggleAreaSelection,
+                    ),
+                  CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    child: const Text('Reset'),
+                    onPressed: _reset,
+                  ),
+                ],
               )
             : null,
       ),
@@ -190,9 +256,62 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           flex: 2,
-          child: Image.file(
-            File(_capturedImage!.path),
-            fit: BoxFit.contain,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final screenSize = Size(constraints.maxWidth, constraints.maxHeight);
+              
+              return Stack(
+                children: [
+                  Image.file(
+                    File(_capturedImage!.path),
+                    fit: BoxFit.contain,
+                  ),
+                  if (_showTextOverlay && _textDetections.isNotEmpty && _imageSize != null && !_isSelectingArea)
+                    Positioned.fill(
+                      child: TextOverlay(
+                        detections: _textDetections,
+                        onTextTap: _searchForText,
+                        imageSize: _imageSize!,
+                        screenSize: screenSize,
+                      ),
+                    ),
+                  if (_isSelectingArea)
+                    Positioned.fill(
+                      child: CropOverlay(
+                        imageSize: screenSize,
+                        onCropAreaChanged: _onCropAreaChanged,
+                        initialCropArea: _selectedCropArea,
+                      ),
+                    ),
+                  if (_isSelectingArea)
+                    Positioned(
+                      bottom: 16,
+                      right: 16,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CupertinoButton.filled(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: const Text('Cancel'),
+                            onPressed: () {
+                              setState(() {
+                                _isSelectingArea = false;
+                                _selectedCropArea = null;
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          CupertinoButton.filled(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: const Text('Apply'),
+                            onPressed: _selectedCropArea != null ? _reprocessWithCropArea : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
         ),
         if (_textDetections.isNotEmpty)
