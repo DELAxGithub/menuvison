@@ -186,23 +186,50 @@ class _HomeScreenState extends State<HomeScreen> {
   }
   
   Widget _buildCapturedImageView() {
-    return Stack(
-      fit: StackFit.expand,
+    return Column(
       children: [
-        Image.file(
-          File(_capturedImage!.path),
-          fit: BoxFit.contain,
+        Expanded(
+          flex: 2,
+          child: Image.file(
+            File(_capturedImage!.path),
+            fit: BoxFit.contain,
+          ),
         ),
-        if (_textDetections.isNotEmpty && _imageSize != null)
-          LayoutBuilder(
-            builder: (context, constraints) {
-              return TextOverlay(
-                detections: _textDetections,
-                onTextTap: _searchForText,
-                imageSize: _imageSize!,
-                screenSize: Size(constraints.maxWidth, constraints.maxHeight),
-              );
-            },
+        if (_textDetections.isNotEmpty)
+          Expanded(
+            flex: 1,
+            child: Container(
+              padding: const EdgeInsets.all(AppSpacing.paddingStandard),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Detected Text:',
+                    style: AppTextStyles.sectionTitle,
+                  ),
+                  const SizedBox(height: AppSpacing.paddingSmall),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: _textDetections.length,
+                      itemBuilder: (context, index) {
+                        final detection = _textDetections[index];
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: AppSpacing.paddingSmall),
+                          child: ListTile(
+                            title: Text(
+                              detection.text,
+                              style: AppTextStyles.body,
+                            ),
+                            onTap: () => _searchForText(detection.text),
+                            trailing: const Icon(Icons.search),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
       ],
     );
